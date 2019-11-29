@@ -30,7 +30,7 @@ static int run_state = READY;
 static int last_run_state = RUN;
 
 int button_timer = 0;
-int system_timer = 0;
+unsigned long system_timer = 0;
 int start_paused_time = 0;
 int paused_time = 0;
 int adc_key_in  = 0;
@@ -52,8 +52,8 @@ typedef struct
   int divider;
   int stepValue;
   int displayType;
-  char *topLine;
-  char *bottomLine;
+  const char *topLine;
+  const char *bottomLine;
 }settings_s;
 
 settings_s settings[SET_COUNT];
@@ -305,13 +305,13 @@ void StepperMotor()
   }
 
   
-  if(microsteps < (settings[SET_TURN].currentValue * settings[SET_MICROSTEP].currentValue))
+  if(microsteps < (unsigned long)(settings[SET_TURN].currentValue * settings[SET_MICROSTEP].currentValue))
   {  
     micropause = micronow;
   }
   else
   {
-    if(micronow - micropause < (settings[SET_PAUSE].currentValue * 1000L))
+    if(micronow - micropause < (unsigned long)(settings[SET_PAUSE].currentValue * 1000L))
     {
       togglePulse = LOW;
     }
@@ -399,5 +399,3 @@ void loop()
     button_timer = 0;
   }
 }
-
-
