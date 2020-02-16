@@ -2,11 +2,12 @@
 #include <LiquidCrystal.h>
 #include <EEPROM.h>
 
-#define EEPROM_KEY 0xABCD
+#define EEPROM_KEY 0xABCD //Change this if you modify any of the menus to refresh the EEPROM
 #define PUL_OUT   13
 #define DIR_OUT   12
 #define EN_OUT    11
 #define PAUSE_IN  3
+#define USING_PAUSE_SWITCH (0) //Set to 1 if using an external switch (PAUSE_IN) to pause the stepper motor
 
 const int stepsPerRevolution = 200;  // 1.8 degree step increments
 
@@ -26,17 +27,23 @@ enum {SET_RATIO, SET_MICROSTEP,
 
 static int lcd_key  = BTN_NONE;
 static int lcd_key_last  = BTN_NONE;
-static int run_state = READY;
-static int last_run_state = RUN;
+static int last_run_state = PAUSED;
 
 int button_timer = 0;
 unsigned long system_timer = 0;
 int start_paused_time = 0;
 int paused_time = 0;
 int adc_key_in  = 0;
-int eepromKey = 0;
+unsigned int eepromKey = 0;
 int togglePulse = LOW;
+
+#if(USING_PAUSE_SWITCH == 1)
 int startStatePause = LOW;
+static int run_state = READY;
+#else
+static int run_state = RUN;
+#endif
+
 
 
 bool home_display = true;
@@ -58,7 +65,7 @@ typedef struct
 
 settings_s settings[SET_COUNT];
 
-const char * system_version = "1.0.0";
+const char * system_version = "1.1.0";
 const char * system_about = "HCW 2018";
 bool reset_factory = false;
 
@@ -84,7 +91,7 @@ void reset_settings()
   settings[SET_MICROSTEP] = (settings_s){   4,   0,   1,    32,   1,   2,   DIS_POW, "Micro Step:    ", "   "};
   settings[SET_PAUSE]     = (settings_s){1000,   0,   0,  5000,   1, 250, DIS_VALUE, "Pause:         ", "ms "};
   settings[SET_TURN]      = (settings_s){   2,   0,   1,    25,   1,   1, DIS_VALUE, "Rotate:        ", " steps"};
-  settings[SET_RPM]       = (settings_s){ 100,   0,  10,  1000, 100,  10, DIS_VALUE, "Speed:         ", " RPM"};
+  settings[SET_RPM]       = (settings_s){ 100,   0,  10,  2000, 100,  10, DIS_VALUE, "Speed:         ", " RPM"};
   settings[SET_DIR]       = (settings_s){   1,   0,   0,     1,   1,   1,   DIS_DIR, "Direction:     ", "   "};
   settings[SET_VERSION]   = (settings_s){   0,   0,   0,     0,   1,   0,  DIS_NONE, "Version:       ", system_version};
   settings[SET_ABOUT]     = (settings_s){   0,   0,   0,     0,   0,   0,  DIS_NONE, "About:         ", system_about};
@@ -321,11 +328,13 @@ void StepperMotor()
     }
   }
 
+#if(USING_PAUSE_SWITCH == 1)
   if(digitalRead(PAUSE_IN) == startStatePause)
   {
     run_state = PAUSED; 
   }
   else
+#endif
   {
     run_state = RUN; 
   }
@@ -365,37 +374,43 @@ void setup()
   
  UpdateDisplay();
 
+#if(USING_PAUSE_SWITCH == 1)
  run_state = READY;
+#else
+ run_state = RUN;
+#endif
+ 
+ #if (USING_PAUSE_SWITCH == 1)
  startStatePause = digitalRead(PAUSE_IN);
+ #endif
 }
 
 void loop()
 {
   StepperMotor();
   
-  //make this a 100 millisecond loop
-  if((millis()/100) == system_timer) return;
+  //make this a 100hz loop
+  if((millis()) < system_timer) return;
   
-  system_timer = millis()/100;
+  system_timer = (millis() + 10);
  
   adc_key_in = analogRead(0);
   lcd_key = read_LCD_buttons(); //global  
 
   if(lcd_key != BTN_NONE)
   {
-    button_timer++;
+    button_timer++; //debounce
     lcd_key_last = lcd_key;
   }
   else
   { 
-    if(HandleButton(lcd_key_last) ||(last_run_state != run_state))
+    if((button_timer > 5 && HandleButton(lcd_key_last)) || (last_run_state != run_state))
     {
       UpdateDisplay();
       last_run_state = run_state;
     }
 
     lcd_key_last = lcd_key;
-       
     button_timer = 0;
   }
 }
