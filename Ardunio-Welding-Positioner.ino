@@ -2,14 +2,16 @@
 #include <LiquidCrystal.h>
 #include <EEPROM.h>
 
-#define EEPROM_KEY 0xABCD //Change this if you modify any of the menus to refresh the EEPROM
+#define USING_PAUSE_SWITCH (0) //Set to 1 if using an external switch (PAUSE_IN) to pause the stepper motor
+
+#define EEPROM_KEY 0xABCE //Change this if you modify any of the menus to refresh the EEPROM
 #define PUL_OUT   13
 #define DIR_OUT   12
 #define EN_OUT    11
 #define PAUSE_IN  3
-#define USING_PAUSE_SWITCH (0) //Set to 1 if using an external switch (PAUSE_IN) to pause the stepper motor
 
 const int stepsPerRevolution = 200;  // 1.8 degree step increments
+const unsigned long microPulses = 60000000 / stepsPerRevolution;
 
 // select the pins used on the LCD panel
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
@@ -89,9 +91,9 @@ void reset_settings()
                                      // CRNT, PREV, MIN,   MAX, DIV, STP,     Type, "             TOP", " BTM"
   settings[SET_RATIO]     = (settings_s){  10,   0,   1,   100,  10,   1, DIS_VALUE, "Gear Ratio:    ", ":1 "};
   settings[SET_MICROSTEP] = (settings_s){   4,   0,   1,    32,   1,   2,   DIS_POW, "Micro Step:    ", "   "};
-  settings[SET_PAUSE]     = (settings_s){1000,   0,   0,  5000,   1, 250, DIS_VALUE, "Pause:         ", "ms "};
+  settings[SET_PAUSE]     = (settings_s){   0,   0,   0,  5000,   1, 250, DIS_VALUE, "Pause:         ", "ms "};
   settings[SET_TURN]      = (settings_s){   2,   0,   1,    25,   1,   1, DIS_VALUE, "Rotate:        ", " steps"};
-  settings[SET_RPM]       = (settings_s){ 100,   0,  10,  2000, 100,  10, DIS_VALUE, "Speed:         ", " RPM"};
+  settings[SET_RPM]       = (settings_s){ 100,   0,  10,  6000, 100, 100, DIS_VALUE, "Speed:         ", " RPM"};
   settings[SET_DIR]       = (settings_s){   1,   0,   0,     1,   1,   1,   DIS_DIR, "Direction:     ", "   "};
   settings[SET_VERSION]   = (settings_s){   0,   0,   0,     0,   1,   0,  DIS_NONE, "Version:       ", system_version};
   settings[SET_ABOUT]     = (settings_s){   0,   0,   0,     0,   0,   0,  DIS_NONE, "About:         ", system_about};
@@ -297,14 +299,18 @@ void StepperMotor()
   unsigned long microseconds = 0;
   unsigned long micronow = micros();
 
-  double dmicroseconds =  (double)((double)stepsPerRevolution * (double)settings[SET_MICROSTEP].currentValue) * 
+  double dmicroseconds =  (double)((double)settings[SET_MICROSTEP].currentValue) * 
                           (double)((double)settings[SET_RPM].currentValue / (double)settings[SET_RPM].divider) * 
                           (double)((double)settings[SET_RATIO].currentValue / (double)settings[SET_RATIO].divider) *
-                          2.0;
-                          
-  microseconds = 60L * 1000L * 1000L / (unsigned long)dmicroseconds;
-  
-  if(micronow - micropulse > microseconds)
+                          2.0; //divide by 2 so there is equal time high and low
+
+  //This is how many micro seconds half the period will be
+  microseconds = microPulses / (unsigned long)dmicroseconds;
+
+  //Arduino isnt the best timer accuracy, limit to 100us 
+  microseconds = max(microseconds, 100);
+
+  if(micronow - micropulse >= microseconds)
   {
     micropulse = micronow;
     togglePulse == LOW ? togglePulse = HIGH : togglePulse = LOW;
@@ -349,7 +355,7 @@ void StepperMotor()
 void setup()
 {
  lcd.begin(16, 2);              // start the library
- 
+
  EEPROM.get(0, eepromKey);
  
  if(eepromKey != EEPROM_KEY)
@@ -385,14 +391,16 @@ void setup()
  #endif
 }
 
+char buffer[50] = {0};
+
 void loop()
 {
   StepperMotor();
   
   //make this a 100hz loop
-  if((millis()) < system_timer) return;
-  
-  system_timer = (millis() + 10);
+  if((micros()) < system_timer) return;
+
+  system_timer = (micros() + 10000);
  
   adc_key_in = analogRead(0);
   lcd_key = read_LCD_buttons(); //global  
@@ -413,4 +421,5 @@ void loop()
     lcd_key_last = lcd_key;
     button_timer = 0;
   }
+  
 }
