@@ -2,51 +2,68 @@
 #include <LiquidCrystal.h>
 #include <EEPROM.h>
 
-#define USING_PAUSE_SWITCH (0) //Set to 1 if using an external switch (PAUSE_IN) to pause the stepper motor
+#define USING_PAUSE_SWITCH (0) // Set to 1 if using an external switch (PAUSE_IN) to pause the stepper motor
 
-#define EEPROM_KEY 0xABCE //Change this if you modify any of the menus to refresh the EEPROM
-#define PUL_OUT   13
-#define DIR_OUT   12
-#define EN_OUT    11
-#define PAUSE_IN  3
+#define EEPROM_KEY 0xABCD // Change this if you modify any of the menus to refresh the EEPROM
+#define PUL_OUT   13      // Pulse output
+#define DIR_OUT   12      // Direction output
+#define EN_OUT    11      // Enable output
+#define KEY_IN    0       // Analog input from buttons on display
+#define PAUSE_IN  3       // Foot switch to start or stop the rotation
 
 const int stepsPerRevolution = 200;  // 1.8 degree step increments
-const unsigned long microPulses = 60000000 / stepsPerRevolution;
+const unsigned long microPulses = 60000000 / stepsPerRevolution; // micropulses for RPM calculation 
+const unsigned int TopLineLen = 16;  // 16 character max for top line
+const unsigned int BtmLineLen = 8;   // 8 character max for bottom line
+const unsigned int ButtonDebounce = 5; // 50ms debounce timer when used with 100hz timer
 
 // select the pins used on the LCD panel
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
+// panel and buttons
+enum {BTN_RIGHT, 
+      BTN_UP, 
+      BTN_DOWN, 
+      BTN_LEFT, 
+      BTN_SELECT, 
+      BTN_NONE};
 
-// define some values used by the panel and buttons
-enum {BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_SELECT, BTN_NONE};
-enum {DIS_NONE, DIS_VALUE, DIS_YESNO, DIS_T1F0, DIS_DIR, DIS_POW};
-enum {READY, PAUSED, RUN};
-enum {SET_RATIO, SET_MICROSTEP, 
-      SET_PAUSE, SET_TURN, SET_RPM, SET_DIR,
-      SET_VERSION, SET_ABOUT,
+// Display types
+enum {DIS_NONE, 
+      DIS_VALUE, 
+      DIS_YESNO, 
+      DIS_T1F0, 
+      DIS_DIR, 
+      DIS_POW};
+
+// Run state
+enum {READY, 
+      PAUSED, 
+      RUN};
+
+// Menus
+enum {SET_RATIO, 
+      SET_MICROSTEP, 
+      SET_PAUSE, 
+      SET_TURN, 
+      SET_RPM, 
+      SET_DIR,
+      SET_VERSION, 
+      SET_ABOUT,
       SET_COUNT};
 
 
 static int lcd_key  = BTN_NONE;
 static int lcd_key_last  = BTN_NONE;
 static int last_run_state = PAUSED;
-
-int button_timer = 0;
-unsigned long system_timer = 0;
-int start_paused_time = 0;
-int paused_time = 0;
-int adc_key_in  = 0;
-unsigned int eepromKey = 0;
-int togglePulse = LOW;
+volatile int togglePulse = LOW;
 
 #if(USING_PAUSE_SWITCH == 1)
-int startStatePause = LOW;
-static int run_state = READY;
+  int startStatePause = LOW;
+  static int run_state = READY;
 #else
-static int run_state = RUN;
+  static int run_state = RUN;
 #endif
-
-
 
 bool home_display = true;
 bool quick_adjust_rpm = true;
@@ -54,6 +71,7 @@ int settings_sub_menu = 0;
 
 typedef struct 
 {
+  unsigned int startKey;
   int currentValue;
   int previousValue;
   int minValue;
@@ -61,42 +79,42 @@ typedef struct
   int divider;
   int stepValue;
   int displayType;
-  const char *topLine;
-  const char *bottomLine;
+  char topLine[TopLineLen];
+  char bottomLine[BtmLineLen];
+  unsigned int endKey;
 }settings_s;
 
 settings_s settings[SET_COUNT];
 
-const char * system_version = "1.1.0";
-const char * system_about = "HCW 2018";
-bool reset_factory = false;
 
 // read the buttons
 int read_LCD_buttons()
 {
- adc_key_in = analogRead(0);      // read the value from the sensor 
- if (adc_key_in > 1000) return BTN_NONE; // We make this the 1st option for speed reasons since it will be the most likely result
+  int adc_key_in  = 0;
+  adc_key_in = analogRead(KEY_IN);        // read the value from the sensor
 
- if (adc_key_in < 50)   return BTN_RIGHT;  
- if (adc_key_in < 195)  return BTN_UP; 
- if (adc_key_in < 380)  return BTN_DOWN; 
- if (adc_key_in < 555)  return BTN_LEFT; 
- if (adc_key_in < 790)  return BTN_SELECT;   
+  if (adc_key_in > 1000) return BTN_NONE; // We make this the 1st option for speed reasons since it will be the most likely result
+  if (adc_key_in < 50)   return BTN_RIGHT;  
+  if (adc_key_in < 195)  return BTN_UP; 
+  if (adc_key_in < 380)  return BTN_DOWN; 
+  if (adc_key_in < 555)  return BTN_LEFT; 
+  if (adc_key_in < 790)  return BTN_SELECT;   
 
- return BTN_SELECT;  // when all others fail, return this...
+  return BTN_SELECT;  // when all others fail, return this...
 }
 
 void reset_settings()
 { 
-                                     // CRNT, PREV, MIN,   MAX, DIV, STP,     Type, "             TOP", " BTM"
-  settings[SET_RATIO]     = (settings_s){  10,   0,   1,   100,  10,   1, DIS_VALUE, "Gear Ratio:    ", ":1 "};
-  settings[SET_MICROSTEP] = (settings_s){   4,   0,   1,    32,   1,   2,   DIS_POW, "Micro Step:    ", "   "};
-  settings[SET_PAUSE]     = (settings_s){   0,   0,   0,  5000,   1, 250, DIS_VALUE, "Pause:         ", "ms "};
-  settings[SET_TURN]      = (settings_s){   2,   0,   1,    25,   1,   1, DIS_VALUE, "Rotate:        ", " steps"};
-  settings[SET_RPM]       = (settings_s){ 100,   0,  10,  6000, 100, 100, DIS_VALUE, "Speed:         ", " RPM"};
-  settings[SET_DIR]       = (settings_s){   1,   0,   0,     1,   1,   1,   DIS_DIR, "Direction:     ", "   "};
-  settings[SET_VERSION]   = (settings_s){   0,   0,   0,     0,   1,   0,  DIS_NONE, "Version:       ", system_version};
-  settings[SET_ABOUT]     = (settings_s){   0,   0,   0,     0,   0,   0,  DIS_NONE, "About:         ", system_about};
+                                                 // CRNT, PREV, MIN,   MAX, DIV, STP,     Type, "            TOP", " BTM"
+  settings[SET_RATIO]     = (settings_s){EEPROM_KEY,  10,   0,   1,   100,  10,   1, DIS_VALUE, "Gear Ratio:    ", ":1     ", EEPROM_KEY};
+  settings[SET_MICROSTEP] = (settings_s){EEPROM_KEY,   4,   0,   1,    32,   1,   2,   DIS_POW, "Micro Step:    ", "       ", EEPROM_KEY};
+  settings[SET_PAUSE]     = (settings_s){EEPROM_KEY,   0,   0,   0,  5000,   1, 250, DIS_VALUE, "Pause:         ", "ms     ", EEPROM_KEY};
+  settings[SET_TURN]      = (settings_s){EEPROM_KEY,   2,   0,   1,    25,   1,   1, DIS_VALUE, "Rotate:        ", " steps ", EEPROM_KEY};
+  settings[SET_RPM]       = (settings_s){EEPROM_KEY, 100,   0,  10,  6000, 100,  10, DIS_VALUE, "Speed:         ", " RPM   ", EEPROM_KEY};
+  settings[SET_DIR]       = (settings_s){EEPROM_KEY,   1,   0,   0,     1,   1,   1,   DIS_DIR, "Direction:     ", "       ", EEPROM_KEY};
+  settings[SET_VERSION]   = (settings_s){EEPROM_KEY,   0,   0,   0,     0,   1,   0,  DIS_NONE, "Version:       ", "1.1.0  ", EEPROM_KEY};
+  settings[SET_ABOUT]     = (settings_s){EEPROM_KEY,   0,   0,   0,     0,   0,   0,  DIS_NONE, "About:         ", "HCW    ", EEPROM_KEY};
+
 }
 
 void Increase(int item)
@@ -279,7 +297,8 @@ bool HandleButton(int button)
       
       case (BTN_SELECT):
       home_display = true;
-      EEPROM.put(sizeof(eepromKey), settings);
+      //Save the settings when we exit back to the home screen
+      EEPROM.put(0, settings); 
       break;
       
       default:
@@ -345,7 +364,6 @@ void StepperMotor()
     run_state = RUN; 
   }
    
- 
   digitalWrite(PUL_OUT, togglePulse ? HIGH : LOW);
   digitalWrite(DIR_OUT, settings[SET_DIR].currentValue > 0 ? HIGH : LOW);
   digitalWrite(EN_OUT, run_state == PAUSED ? HIGH : LOW);
@@ -354,20 +372,20 @@ void StepperMotor()
 
 void setup()
 {
- lcd.begin(16, 2);              // start the library
+ // Start the display library
+ lcd.begin(16, 2);              
 
- EEPROM.get(0, eepromKey);
+ EEPROM.get(0, settings);
  
- if(eepromKey != EEPROM_KEY)
+ // Check if we need to reset the EEPROM
+ if(settings[0].startKey != EEPROM_KEY || 
+    settings[0].endKey != EEPROM_KEY || 
+    settings[SET_COUNT - 1].startKey != EEPROM_KEY || 
+    settings[SET_COUNT - 1].endKey != EEPROM_KEY)
  {
-  eepromKey = EEPROM_KEY;
-  EEPROM.put(0, eepromKey);
-
-  reset_settings();
-  EEPROM.put(sizeof(eepromKey), settings);
+   reset_settings();
+   EEPROM.put(0, settings);
  }
- 
-  EEPROM.get(sizeof(eepromKey), settings);
 
  pinMode(DIR_OUT, OUTPUT);
  pinMode(EN_OUT, OUTPUT);
@@ -382,19 +400,18 @@ void setup()
 
 #if(USING_PAUSE_SWITCH == 1)
  run_state = READY;
+ startStatePause = digitalRead(PAUSE_IN);
 #else
  run_state = RUN;
 #endif
  
- #if (USING_PAUSE_SWITCH == 1)
- startStatePause = digitalRead(PAUSE_IN);
- #endif
 }
-
-char buffer[50] = {0};
 
 void loop()
 {
+  static unsigned int button_timer = 0;
+  static unsigned long system_timer = 0;
+
   StepperMotor();
   
   //make this a 100hz loop
@@ -402,8 +419,7 @@ void loop()
 
   system_timer = (micros() + 10000);
  
-  adc_key_in = analogRead(0);
-  lcd_key = read_LCD_buttons(); //global  
+  lcd_key = read_LCD_buttons();   
 
   if(lcd_key != BTN_NONE)
   {
@@ -412,7 +428,7 @@ void loop()
   }
   else
   { 
-    if((button_timer > 5 && HandleButton(lcd_key_last)) || (last_run_state != run_state))
+    if((button_timer > ButtonDebounce && HandleButton(lcd_key_last)) || (last_run_state != run_state))
     {
       UpdateDisplay();
       last_run_state = run_state;
